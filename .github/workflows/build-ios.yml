@@ -1,0 +1,106 @@
+name: Build Local Qwen iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout starter repo
+        uses: actions/checkout@v6
+
+      - name: Setup Xcode
+        uses: ggml-org/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show environment
+        run: |
+          sw_vers
+          xcodebuild -version
+          cmake --version
+          df -h
+
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git llama.cpp
+
+      - name: Build llama XCFramework
+        working-directory: llama.cpp
+        run: |
+          chmod +x build-xcframework.sh
+          ./build-xcframework.sh
+
+      - name: Ensure iOS platform is installed
+        run: |
+          xcodebuild -downloadPlatform iOS
+
+      - name: Build official llama.swiftui app for a real iPhone
+        working-directory: llama.cpp
+        run: |
+          xcodebuild \
+            -project examples/llama.swiftui/llama.swiftui.xcodeproj \
+            -scheme llama.swiftui \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            FRAMEWORK_FOLDER_PATH=./build-ios \
+            build
+
+      - name: Locate built app
+        id: locate
+        shell: bash
+        run: |
+          set -e
+          APP_PATH="$(find "$GITHUB_WORKSPACE/DerivedData/Build/Products" -type d -name '*.app' | head -n 1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app was found."
+            find "$GITHUB_WORKSPACE/DerivedData/Build/Products" -maxdepth 4 -print || true
+            exit 1
+          fi
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "Found app: $APP_PATH"
+
+      - name: Enable Files app / File Sharing
+        shell: bash
+        run: |
+          PLIST="$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName LocalQwen" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string LocalQwen" "$PLIST"
+
+          /usr/libexec/PlistBuddy -c "Set :UIFileSharingEnabled true" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
+
+          /usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST"
+
+          echo "Final Info.plist values:"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Print :LSSupportsOpeningDocumentsInPlace" "$PLIST" || true
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/Payload"
+          mkdir -p "$GITHUB_WORKSPACE/Payload"
+          cp -R "$APP_PATH" "$GITHUB_WORKSPACE/Payload/"
+          cd "$GITHUB_WORKSPACE"
+          /usr/bin/zip -qry LocalQwen-unsigned.ipa Payload
+          ls -lh LocalQwen-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: LocalQwen-iOS-unsigned-IPA
+          path: LocalQwen-unsigned.ipa
+          retention-days: 7

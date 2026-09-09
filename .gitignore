@@ -1,0 +1,7 @@
+# Do not upload model files
+*.gguf
+*.bin
+*.ipa
+DerivedData/
+llama.cpp/
+Payload/
