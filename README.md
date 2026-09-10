@@ -35,19 +35,19 @@ ZIP'in içindeki dosyaları mevcut repo klasörünün köküne kopyala. `.github
 
 ```bash
 git add .
-git commit -m "LocalVoiceAI v3.1 voice"
+git commit -m "LocalVoiceAI v3.2 voice"
 git push
 ```
 
-GitHub -> Actions -> **Build LocalVoiceAI iOS v3.1 Voice**.
+GitHub -> Actions -> **Build LocalVoiceAI iOS v3.2 Voice**.
 
 Başarılı build sonunda artifact:
 
-`LocalVoiceAI-v3.1-Voice-unsigned-IPA`
+`LocalVoiceAI-v3.2-Voice-unsigned-IPA`
 
 İçindeki dosya:
 
-`LocalVoiceAI-v3.1-Voice-unsigned.ipa`
+`LocalVoiceAI-v3.2-Voice-unsigned.ipa`
 
 Bunu Sideloadly + Remote Anisette ile sign/install et.
 
@@ -98,6 +98,6 @@ Mikrofon -> yerel WAV -> whisper.cpp -> metin -> llama.cpp/Qwen -> yanıt -> iOS
 Whisper/Qwen inference için PC, localhost server veya bulut API gerekmez.
 
 
-## v3.1 build fix
+## v3.2 build fix
 
 GitHub Actions patch adimindaki `upstream sampler init block not found` hatasi giderildi. Sampler artik upstream kaynak kodundaki bosluklara bagli bir metin degistirme ile yamalanmiyor; uygulama her uretimden once `configureSampling()` ile ayarlari runtime tarafinda kuruyor.

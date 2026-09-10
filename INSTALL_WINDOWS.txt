@@ -1,4 +1,4 @@
-LocalVoiceAI iOS v3.1 Voice — Windows
+LocalVoiceAI iOS v3.2 Voice — Windows
 ===================================
 
 1) ZIP'i aç.
@@ -7,12 +7,12 @@ LocalVoiceAI iOS v3.1 Voice — Windows
 3) Git Bash'i repo kökünde aç:
 
    git add .
-   git commit -m "LocalVoiceAI v3.1 voice"
+   git commit -m "LocalVoiceAI v3.2 voice"
    git push
 
-4) GitHub -> repo -> Actions -> "Build LocalVoiceAI iOS v3.1 Voice".
-5) Artifact "LocalVoiceAI-v3.1-Voice-unsigned-IPA" dosyasını indir.
-6) İçinden LocalVoiceAI-v3.1-Voice-unsigned.ipa'yı çıkar.
+4) GitHub -> repo -> Actions -> "Build LocalVoiceAI iOS v3.2 Voice".
+5) Artifact "LocalVoiceAI-v3.2-Voice-unsigned-IPA" dosyasını indir.
+6) İçinden LocalVoiceAI-v3.2-Voice-unsigned.ipa'yı çıkar.
 7) Sideloadly + Remote Anisette ile iPhone'a kur.
 
 Telefon:

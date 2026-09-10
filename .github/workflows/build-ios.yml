@@ -1,4 +1,4 @@
-name: Build LocalVoiceAI iOS v3.1 Voice
+name: Build LocalVoiceAI iOS v3.2 Voice
 
 on:
   workflow_dispatch:
@@ -194,23 +194,34 @@ jobs:
           </plist>
           EOF
 
-          mapfile -t LIBS < <(
-            {
-              find build-ios-device/src -type f -name 'libwhisper.a' -print
-              find build-ios-device/ggml/src -type f \( \
-                -name 'libggml.a' -o \
-                -name 'libggml-base.a' -o \
-                -name 'libggml-cpu.a' -o \
-                -name 'libggml-blas.a' \
-              \) -print
-            } | sort -u
-          )
+          # macOS still ships Bash 3.2, which has no `mapfile` builtin.
+          # Build a newline-delimited list first, then populate a normal Bash array.
+          mkdir -p build-ios-device/temp
+          LIB_LIST=build-ios-device/temp/whisper-libs.txt
+          {
+            find build-ios-device/src -type f -name 'libwhisper.a' -print
+            find build-ios-device/ggml/src -type f \( \
+              -name 'libggml.a' -o \
+              -name 'libggml-base.a' -o \
+              -name 'libggml-cpu.a' -o \
+              -name 'libggml-blas.a' \
+            \) -print
+          } | sort -u > "$LIB_LIST"
+
+          LIBS=()
+          while IFS= read -r lib; do
+            [ -n "$lib" ] && LIBS+=("$lib")
+          done < "$LIB_LIST"
 
           echo "Whisper static libraries:"
           printf '  %s\n' "${LIBS[@]}"
-          [ "${#LIBS[@]}" -ge 4 ] || { echo "Expected Whisper/ggml libraries were not found."; exit 1; }
+          [ "${#LIBS[@]}" -ge 4 ] || {
+            echo "Expected Whisper/ggml libraries were not found."
+            echo "Discovered library list:"
+            cat "$LIB_LIST" || true
+            exit 1
+          }
 
-          mkdir -p build-ios-device/temp
           libtool -static -o build-ios-device/temp/combined.a "${LIBS[@]}"
 
           # Export only the public Whisper C API.  ggml_* stays private inside this
@@ -396,12 +407,12 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/Payload"
           cp -R "$APP_PATH" "$GITHUB_WORKSPACE/Payload/"
           cd "$GITHUB_WORKSPACE"
-          /usr/bin/zip -qry LocalVoiceAI-v3.1-Voice-unsigned.ipa Payload
-          ls -lh LocalVoiceAI-v3.1-Voice-unsigned.ipa
+          /usr/bin/zip -qry LocalVoiceAI-v3.2-Voice-unsigned.ipa Payload
+          ls -lh LocalVoiceAI-v3.2-Voice-unsigned.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v6
         with:
-          name: LocalVoiceAI-v3.1-Voice-unsigned-IPA
-          path: LocalVoiceAI-v3.1-Voice-unsigned.ipa
+          name: LocalVoiceAI-v3.2-Voice-unsigned-IPA
+          path: LocalVoiceAI-v3.2-Voice-unsigned.ipa
           retention-days: 7
