@@ -1,4 +1,4 @@
-name: Build LocalVoiceAI iOS v3 Voice
+name: Build LocalVoiceAI iOS v3.1 Voice
 
 on:
   workflow_dispatch:
@@ -81,20 +81,9 @@ jobs:
                         marker + '\n        is_done = false\n        n_decode = 0',
                         1)
 
-          # 4) Default Qwen3 non-thinking sampler.
-          old_sampler = '''        let sparams = llama_sampler_chain_default_params()
-          self.sampling = llama_sampler_chain_init(sparams)
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.4))
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))'''
-          new_sampler = '''        let sparams = llama_sampler_chain_default_params()
-          self.sampling = llama_sampler_chain_init(sparams)
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_top_k(20))
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(0.8, 1))
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.7))
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))'''
-          if old_sampler not in s:
-              raise SystemExit('upstream sampler init block not found')
-          s = s.replace(old_sampler, new_sampler, 1)
+          # 4) Do not rewrite the sampler created by upstream init().
+          # The app calls configureSampling() before every generation, so an exact
+          # text replacement here is unnecessary and was fragile to indentation.
 
           # 5) Runtime sampler switch.
           configure_method = (
@@ -407,12 +396,12 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/Payload"
           cp -R "$APP_PATH" "$GITHUB_WORKSPACE/Payload/"
           cd "$GITHUB_WORKSPACE"
-          /usr/bin/zip -qry LocalVoiceAI-v3-Voice-unsigned.ipa Payload
-          ls -lh LocalVoiceAI-v3-Voice-unsigned.ipa
+          /usr/bin/zip -qry LocalVoiceAI-v3.1-Voice-unsigned.ipa Payload
+          ls -lh LocalVoiceAI-v3.1-Voice-unsigned.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v6
         with:
-          name: LocalVoiceAI-v3-Voice-unsigned-IPA
-          path: LocalVoiceAI-v3-Voice-unsigned.ipa
+          name: LocalVoiceAI-v3.1-Voice-unsigned-IPA
+          path: LocalVoiceAI-v3.1-Voice-unsigned.ipa
           retention-days: 7
