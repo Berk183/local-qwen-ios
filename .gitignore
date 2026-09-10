@@ -1,8 +1,6 @@
-# Model files must never be pushed to GitHub
-*.gguf
-*.bin
-*.ipa
+llama.cpp/
+whisper.cpp/
 DerivedData/
 Payload/
-llama.cpp/
+*.ipa
 .DS_Store

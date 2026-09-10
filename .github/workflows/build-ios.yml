@@ -1,4 +1,4 @@
-name: Build LocalVoiceAI iOS v1
+name: Build LocalVoiceAI iOS v3 Voice
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
 jobs:
   build-ios:
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout LocalVoiceAI repo
@@ -26,11 +26,13 @@ jobs:
           cmake --version
           df -h
 
-      - name: Clone pinned llama.cpp
+      - name: Clone pinned llama.cpp and whisper.cpp
         run: |
+          set -euo pipefail
           git clone --depth 1 --branch b10883 https://github.com/ggml-org/llama.cpp.git llama.cpp
+          git clone --depth 1 --branch v1.9.2 https://github.com/ggml-org/whisper.cpp.git whisper.cpp
 
-      - name: Patch official iOS base with LocalVoiceAI UI
+      - name: Patch llama iOS base for LocalVoiceAI v3
         shell: bash
         run: |
           set -euo pipefail
@@ -47,12 +49,8 @@ jobs:
           echo "ContentView: $CONTENT_VIEW"
           echo "LibLlama:    $LIB_LLAMA"
           cp patches/ContentView.swift "$CONTENT_VIEW"
+          cp patches/WhisperBridge.swift "$(dirname "$LIB_LLAMA")/WhisperBridge.swift"
 
-          # The upstream sample is a raw text-completion demo. For instruct/chat
-          # models we need two fixes:
-          # 1) parse GGUF special tokens such as <|im_start|> / <|im_end|>
-          # 2) reset is_done before every new turn (upstream sample otherwise
-          #    immediately exits after the first completed generation).
           python3 - "$LIB_LLAMA" <<'PY'
           from pathlib import Path
           import re
@@ -61,15 +59,13 @@ jobs:
           p = Path(sys.argv[1])
           s = p.read_text(encoding="utf-8")
 
-          # Allow a full 2K prompt batch on the iPhone app.
+          # 1) 2K context / batch for the iPhone 13 target.
           s, n_batch = re.subn(r'llama_batch_init\(512,\s*0,\s*1\)',
                                'llama_batch_init(2048, 0, 1)', s, count=1)
-
-          # Use the full 2048-token context configured by the upstream iOS sample.
           s, n_len = re.subn(r'var n_len: Int32 = 1024',
                              'var n_len: Int32 = 2048', s, count=1)
 
-          # llama_tokenize(..., add_bos, false) -> parse special tokens = true.
+          # 2) Parse Qwen special tokens (<|im_start|>, <|im_end|>, ...).
           s, n_tok = re.subn(
               r'llama_tokenize\(vocab, text, Int32\(utf8Count\), tokens, Int32\(n_tokens\), add_bos, false\)',
               'llama_tokenize(vocab, text, Int32(utf8Count), tokens, Int32(n_tokens), add_bos, true)',
@@ -77,7 +73,7 @@ jobs:
               count=1,
           )
 
-          # Reset generation state for every chat turn.
+          # 3) Reset generation state before every turn.
           marker = 'func completion_init(text: String) {'
           if marker not in s:
               raise SystemExit('completion_init marker not found')
@@ -85,30 +81,266 @@ jobs:
                         marker + '\n        is_done = false\n        n_decode = 0',
                         1)
 
+          # 4) Default Qwen3 non-thinking sampler.
+          old_sampler = '''        let sparams = llama_sampler_chain_default_params()
+          self.sampling = llama_sampler_chain_init(sparams)
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.4))
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))'''
+          new_sampler = '''        let sparams = llama_sampler_chain_default_params()
+          self.sampling = llama_sampler_chain_init(sparams)
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_top_k(20))
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(0.8, 1))
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.7))
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))'''
+          if old_sampler not in s:
+              raise SystemExit('upstream sampler init block not found')
+          s = s.replace(old_sampler, new_sampler, 1)
+
+          # 5) Runtime sampler switch.
+          configure_method = (
+              "    func configureSampling(thinking: Bool) {\n"
+              "        llama_sampler_free(sampling)\n"
+              "        let sparams = llama_sampler_chain_default_params()\n"
+              "        sampling = llama_sampler_chain_init(sparams)\n"
+              "        llama_sampler_chain_add(sampling, llama_sampler_init_top_k(20))\n"
+              "        llama_sampler_chain_add(sampling, llama_sampler_init_top_p(thinking ? 0.95 : 0.8, 1))\n"
+              "        llama_sampler_chain_add(sampling, llama_sampler_init_temp(thinking ? 0.6 : 0.7))\n"
+              "        llama_sampler_chain_add(sampling, llama_sampler_init_dist(1234))\n"
+              "    }\n"
+          )
+          insert_before = '    func model_info() -> String {'
+          if insert_before not in s:
+              raise SystemExit('model_info marker not found')
+          s = s.replace(insert_before, configure_method + '\n' + insert_before, 1)
+
           if n_tok != 1:
               raise SystemExit(f'Expected one tokenizer patch, got {n_tok}')
           if n_len != 1:
               raise SystemExit(f'Expected one n_len patch, got {n_len}')
           if n_batch != 1:
-              print(f'Warning: batch-size patch count was {n_batch}; continuing')
+              raise SystemExit(f'Expected one batch-size patch, got {n_batch}')
 
           p.write_text(s, encoding="utf-8")
-          print('LibLlama chat patches applied.')
+          print('LibLlama v3 patches applied.')
           PY
 
       - name: Build llama XCFramework
         working-directory: llama.cpp
         run: |
+          set -euo pipefail
           chmod +x build-xcframework.sh
           ./build-xcframework.sh
+
+      - name: Build isolated CPU-only Whisper framework for iPhone
+        working-directory: whisper.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Qwen already uses llama.cpp + Metal.  The official whisper XCFramework
+          # also bundles its own ggml Metal runtime.  In one process that can cause
+          # duplicate ggml/Metal symbols.  For this app Whisper is intentionally
+          # built CPU + Accelerate only and only whisper_* symbols are exported.
+          cmake -B build-ios-device -G Xcode \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DWHISPER_COREML=OFF \
+            -DGGML_METAL=OFF \
+            -DGGML_BLAS_DEFAULT=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_OPENMP=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.4 \
+            -DIOS=ON \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS=iphoneos \
+            -S .
+
+          cmake --build build-ios-device --config Release -- -quiet
+
+          FRAMEWORK_DIR="$PWD/build-ios-device/framework/whisper.framework"
+          mkdir -p "$FRAMEWORK_DIR/Headers" "$FRAMEWORK_DIR/Modules"
+
+          cp include/whisper.h "$FRAMEWORK_DIR/Headers/"
+          cp ggml/include/ggml.h "$FRAMEWORK_DIR/Headers/"
+          cp ggml/include/ggml-alloc.h "$FRAMEWORK_DIR/Headers/"
+          cp ggml/include/ggml-backend.h "$FRAMEWORK_DIR/Headers/"
+          cp ggml/include/ggml-cpu.h "$FRAMEWORK_DIR/Headers/"
+          cp ggml/include/ggml-blas.h "$FRAMEWORK_DIR/Headers/"
+          cp ggml/include/gguf.h "$FRAMEWORK_DIR/Headers/"
+
+          cat > "$FRAMEWORK_DIR/Modules/module.modulemap" <<'EOF'
+          framework module whisper {
+              header "whisper.h"
+              link "c++"
+              link framework "Accelerate"
+              link framework "Foundation"
+              export *
+          }
+          EOF
+
+          cat > "$FRAMEWORK_DIR/Info.plist" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key><string>en</string>
+              <key>CFBundleExecutable</key><string>whisper</string>
+              <key>CFBundleIdentifier</key><string>org.ggml.whisper.localvoice</string>
+              <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+              <key>CFBundleName</key><string>whisper</string>
+              <key>CFBundlePackageType</key><string>FMWK</string>
+              <key>CFBundleShortVersionString</key><string>1.9.2</string>
+              <key>CFBundleVersion</key><string>1</string>
+              <key>MinimumOSVersion</key><string>16.4</string>
+              <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+              <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+          </dict>
+          </plist>
+          EOF
+
+          mapfile -t LIBS < <(
+            {
+              find build-ios-device/src -type f -name 'libwhisper.a' -print
+              find build-ios-device/ggml/src -type f \( \
+                -name 'libggml.a' -o \
+                -name 'libggml-base.a' -o \
+                -name 'libggml-cpu.a' -o \
+                -name 'libggml-blas.a' \
+              \) -print
+            } | sort -u
+          )
+
+          echo "Whisper static libraries:"
+          printf '  %s\n' "${LIBS[@]}"
+          [ "${#LIBS[@]}" -ge 4 ] || { echo "Expected Whisper/ggml libraries were not found."; exit 1; }
+
+          mkdir -p build-ios-device/temp
+          libtool -static -o build-ios-device/temp/combined.a "${LIBS[@]}"
+
+          # Export only the public Whisper C API.  ggml_* stays private inside this
+          # framework so it cannot collide with llama.xcframework at runtime.
+          echo '_whisper_*' > build-ios-device/temp/exports.txt
+
+          xcrun -sdk iphoneos clang++ -dynamiclib \
+            -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -arch arm64 \
+            -mios-version-min=16.4 \
+            -Wl,-force_load,"$PWD/build-ios-device/temp/combined.a" \
+            -Wl,-exported_symbols_list,"$PWD/build-ios-device/temp/exports.txt" \
+            -framework Foundation \
+            -framework Accelerate \
+            -install_name '@rpath/whisper.framework/whisper' \
+            -o "$FRAMEWORK_DIR/whisper"
+
+          xcrun vtool -set-build-version ios 16.4 16.4 -replace \
+            -output "$FRAMEWORK_DIR/whisper.tmp" "$FRAMEWORK_DIR/whisper"
+          mv "$FRAMEWORK_DIR/whisper.tmp" "$FRAMEWORK_DIR/whisper"
+          chmod +x "$FRAMEWORK_DIR/whisper"
+
+          echo "--- Whisper framework linkage ---"
+          otool -L "$FRAMEWORK_DIR/whisper"
+          if otool -L "$FRAMEWORK_DIR/whisper" | grep -q 'Metal.framework'; then
+            echo "ERROR: Whisper framework unexpectedly links Metal."
+            exit 1
+          fi
+
+          echo "--- Export sanity check ---"
+          nm -gU "$FRAMEWORK_DIR/whisper" | grep '_whisper_full' >/dev/null
+          if nm -gU "$FRAMEWORK_DIR/whisper" | grep -q ' _ggml_'; then
+            echo "ERROR: ggml symbols leaked from isolated Whisper framework."
+            nm -gU "$FRAMEWORK_DIR/whisper" | grep ' _ggml_' | head -20
+            exit 1
+          fi
+
+          rm -rf build-apple
+          mkdir -p build-apple
+          xcodebuild -create-xcframework \
+            -framework "$FRAMEWORK_DIR" \
+            -output "$PWD/build-apple/whisper.xcframework"
+
+      - name: Attach Whisper framework and bridge to Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf llama.cpp/build-whisper
+          mkdir -p llama.cpp/build-whisper
+          cp -R whisper.cpp/build-apple/whisper.xcframework llama.cpp/build-whisper/whisper.xcframework
+
+          PROJECT="llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj"
+
+          python3 - "$PROJECT" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text(encoding='utf-8')
+
+          WH_FILE = 'F00DCAFE0000000000000001'
+          WH_FRAME_BUILD = 'F00DCAFE0000000000000002'
+          WH_EMBED_BUILD = 'F00DCAFE0000000000000003'
+          SW_FILE = 'F00DCAFE0000000000000004'
+          SW_BUILD = 'F00DCAFE0000000000000005'
+
+          def once(old, new, label):
+              global s
+              n = s.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected one match, got {n}')
+              s = s.replace(old, new, 1)
+
+          once('/* End PBXBuildFile section */',
+               f'\t\t{WH_FRAME_BUILD} /* whisper.xcframework in Frameworks */ = {{isa = PBXBuildFile; fileRef = {WH_FILE} /* whisper.xcframework */; }};\n'
+               f'\t\t{WH_EMBED_BUILD} /* whisper.xcframework in Embed Frameworks */ = {{isa = PBXBuildFile; fileRef = {WH_FILE} /* whisper.xcframework */; settings = {{ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }}; }};\n'
+               f'\t\t{SW_BUILD} /* WhisperBridge.swift in Sources */ = {{isa = PBXBuildFile; fileRef = {SW_FILE} /* WhisperBridge.swift */; }};\n'
+               '/* End PBXBuildFile section */', 'PBXBuildFile')
+
+          once('/* End PBXFileReference section */',
+               f'\t\t{WH_FILE} /* whisper.xcframework */ = {{isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = whisper.xcframework; path = "../../build-whisper/whisper.xcframework"; sourceTree = "<group>"; }};\n'
+               f'\t\t{SW_FILE} /* WhisperBridge.swift */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperBridge.swift; sourceTree = "<group>"; }};\n'
+               '/* End PBXFileReference section */', 'PBXFileReference')
+
+          once('\t\t\t\tDD84C9FE2D747FED007778EC /* llama.xcframework in Embed Frameworks */,',
+               '\t\t\t\tDD84C9FE2D747FED007778EC /* llama.xcframework in Embed Frameworks */,\n'
+               f'\t\t\t\t{WH_EMBED_BUILD} /* whisper.xcframework in Embed Frameworks */,', 'Embed phase')
+
+          once('\t\t\t\tDD84C9FD2D747FED007778EC /* llama.xcframework in Frameworks */,',
+               '\t\t\t\tDD84C9FD2D747FED007778EC /* llama.xcframework in Frameworks */,\n'
+               f'\t\t\t\t{WH_FRAME_BUILD} /* whisper.xcframework in Frameworks */,', 'Frameworks phase')
+
+          once('\t\t\t\tDD84C9FC2D747FED007778EC /* llama.xcframework */,',
+               '\t\t\t\tDD84C9FC2D747FED007778EC /* llama.xcframework */,\n'
+               f'\t\t\t\t{WH_FILE} /* whisper.xcframework */,', 'Frameworks group')
+
+          once('\t\t\t\t8A907F322AC7134E006146EA /* LibLlama.swift */,',
+               '\t\t\t\t8A907F322AC7134E006146EA /* LibLlama.swift */,\n'
+               f'\t\t\t\t{SW_FILE} /* WhisperBridge.swift */,', 'Swift group')
+
+          once('\t\t\t\t8A907F332AC7138A006146EA /* LibLlama.swift in Sources */,',
+               '\t\t\t\t8A907F332AC7138A006146EA /* LibLlama.swift in Sources */,\n'
+               f'\t\t\t\t{SW_BUILD} /* WhisperBridge.swift in Sources */,', 'Sources phase')
+
+          p.write_text(s, encoding='utf-8')
+          print('Whisper framework/project references added.')
+          PY
+
+          grep -n "whisper.xcframework\|WhisperBridge.swift" "$PROJECT"
 
       - name: Ensure iOS platform is installed
         run: |
           xcodebuild -downloadPlatform iOS
 
-      - name: Build LocalVoiceAI for a real iPhone
+      - name: Build LocalVoiceAI v3 for a real iPhone
         working-directory: llama.cpp
         run: |
+          set -euo pipefail
           xcodebuild \
             -project examples/llama.swiftui/llama.swiftui.xcodeproj \
             -scheme llama.swiftui \
@@ -116,16 +348,17 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$GITHUB_WORKSPACE/DerivedData" \
+            IPHONEOS_DEPLOYMENT_TARGET=16.4 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             FRAMEWORK_FOLDER_PATH=./build-ios \
             build
 
-      - name: Locate built app
+      - name: Locate and validate built app
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           APP_PATH="$(find "$GITHUB_WORKSPACE/DerivedData/Build/Products" -type d -name '*.app' | head -n 1)"
           if [ -z "$APP_PATH" ]; then
             echo "No .app was found."
@@ -135,10 +368,19 @@ jobs:
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
           echo "Found app: $APP_PATH"
 
-      - name: Configure app metadata and File Sharing
+          echo "Embedded frameworks:"
+          find "$APP_PATH/Frameworks" -maxdepth 2 -type f -print || true
+          test -f "$APP_PATH/Frameworks/whisper.framework/whisper"
+
+          APP_BINARY="$APP_PATH/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")"
+          echo "App linkage:"
+          otool -L "$APP_BINARY"
+          otool -L "$APP_BINARY" | grep -q 'whisper.framework/whisper'
+
+      - name: Configure app metadata, File Sharing and microphone permission
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           PLIST="$APP_PATH/Info.plist"
 
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName LocalVoiceAI" "$PLIST" 2>/dev/null || \
@@ -150,23 +392,27 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" "$PLIST" 2>/dev/null || \
             /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST"
 
+          /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription LocalVoiceAI sesli sohbet icin mikrofonu kullanir." "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string LocalVoiceAI sesli sohbet icin mikrofonu kullanir." "$PLIST"
+
           echo "Display name: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")"
           echo "Bundle ID:    $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")"
+          echo "Mic usage:    $(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$PLIST")"
 
       - name: Package unsigned IPA
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/Payload"
           mkdir -p "$GITHUB_WORKSPACE/Payload"
           cp -R "$APP_PATH" "$GITHUB_WORKSPACE/Payload/"
           cd "$GITHUB_WORKSPACE"
-          /usr/bin/zip -qry LocalVoiceAI-v1-unsigned.ipa Payload
-          ls -lh LocalVoiceAI-v1-unsigned.ipa
+          /usr/bin/zip -qry LocalVoiceAI-v3-Voice-unsigned.ipa Payload
+          ls -lh LocalVoiceAI-v3-Voice-unsigned.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v6
         with:
-          name: LocalVoiceAI-v1-unsigned-IPA
-          path: LocalVoiceAI-v1-unsigned.ipa
+          name: LocalVoiceAI-v3-Voice-unsigned-IPA
+          path: LocalVoiceAI-v3-Voice-unsigned.ipa
           retention-days: 7

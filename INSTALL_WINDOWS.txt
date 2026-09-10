@@ -1,23 +1,27 @@
-LOCALVOICEAI v1 - KISA KURULUM
+LocalVoiceAI iOS v3 Voice — Windows
+===================================
 
-1) Bu ZIP'in içeriğini mevcut local-qwen-ios repo klasörünün içine çıkar.
-   Gizli .github klasörünün de kopyalandığından emin ol.
-
-2) Repo klasöründe terminal aç:
+1) ZIP'i aç.
+2) İçindeki .github, patches, README.md, .gitignore ve INSTALL_WINDOWS.txt dosyalarını
+   mevcut local-qwen-ios repo klasörünün üzerine kopyala.
+3) Git Bash'i repo kökünde aç:
 
    git add .
-   git commit -m "LocalVoiceAI v1"
+   git commit -m "LocalVoiceAI v3 voice"
    git push
 
-3) GitHub -> repo -> Actions -> "Build LocalVoiceAI iOS v1"
+4) GitHub -> repo -> Actions -> "Build LocalVoiceAI iOS v3 Voice".
+5) Artifact "LocalVoiceAI-v3-Voice-unsigned-IPA" dosyasını indir.
+6) İçinden LocalVoiceAI-v3-Voice-unsigned.ipa'yı çıkar.
+7) Sideloadly + Remote Anisette ile iPhone'a kur.
 
-4) Build başarılı olunca Artifacts'tan:
-   LocalVoiceAI-v1-unsigned-IPA
-   indir.
+Telefon:
+- Qwen: Qwen3-1.7B-Q4_K_M.gguf
+- Whisper: ggml-base-q5_1.bin (multilingual)
+- Whisper switch: aç
+- Düşük bellek modu: iPhone 13 için açık bırak
+- Mikrofona bir kez bas: kayıt başlar
+- Tekrar bas: kayıt biter -> Whisper -> Qwen -> TTS
 
-5) İçindeki LocalVoiceAI-v1-unsigned.ipa dosyasını Sideloadly ile kur.
-   Remote Anisette kullan.
-
-6) Uygulamayı aç -> Model -> Qwen2.5-1.5B-Instruct Q3_K_M modelini seç.
-
-7) İlk test: "Merhaba"
+Not: Qwen ve Whisper model dosyaları IPA'nın içinde değildir. Aynı uygulamanın Documents alanına
+atılır; model değiştirmek için yeniden IPA sign etmen gerekmez.
