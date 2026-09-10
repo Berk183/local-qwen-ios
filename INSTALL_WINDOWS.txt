@@ -1,0 +1,23 @@
+LOCALVOICEAI v1 - KISA KURULUM
+
+1) Bu ZIP'in içeriğini mevcut local-qwen-ios repo klasörünün içine çıkar.
+   Gizli .github klasörünün de kopyalandığından emin ol.
+
+2) Repo klasöründe terminal aç:
+
+   git add .
+   git commit -m "LocalVoiceAI v1"
+   git push
+
+3) GitHub -> repo -> Actions -> "Build LocalVoiceAI iOS v1"
+
+4) Build başarılı olunca Artifacts'tan:
+   LocalVoiceAI-v1-unsigned-IPA
+   indir.
+
+5) İçindeki LocalVoiceAI-v1-unsigned.ipa dosyasını Sideloadly ile kur.
+   Remote Anisette kullan.
+
+6) Uygulamayı aç -> Model -> Qwen2.5-1.5B-Instruct Q3_K_M modelini seç.
+
+7) İlk test: "Merhaba"

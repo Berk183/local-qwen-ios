@@ -1,4 +1,4 @@
-name: Build Local Qwen iOS IPA
+name: Build LocalVoiceAI iOS v1
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Checkout starter repo
+      - name: Checkout LocalVoiceAI repo
         uses: actions/checkout@v6
 
       - name: Setup Xcode
@@ -26,9 +26,75 @@ jobs:
           cmake --version
           df -h
 
-      - name: Clone llama.cpp
+      - name: Clone pinned llama.cpp
         run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git llama.cpp
+          git clone --depth 1 --branch b10883 https://github.com/ggml-org/llama.cpp.git llama.cpp
+
+      - name: Patch official iOS base with LocalVoiceAI UI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONTENT_VIEW="$(find llama.cpp/examples/llama.swiftui -type f -name 'ContentView.swift' | head -n 1)"
+          LIB_LLAMA="$(find llama.cpp/examples/llama.swiftui -type f -name 'LibLlama.swift' | head -n 1)"
+
+          if [ -z "$CONTENT_VIEW" ] || [ -z "$LIB_LLAMA" ]; then
+            echo "Required Swift files were not found."
+            find llama.cpp/examples/llama.swiftui -maxdepth 5 -type f -print
+            exit 1
+          fi
+
+          echo "ContentView: $CONTENT_VIEW"
+          echo "LibLlama:    $LIB_LLAMA"
+          cp patches/ContentView.swift "$CONTENT_VIEW"
+
+          # The upstream sample is a raw text-completion demo. For instruct/chat
+          # models we need two fixes:
+          # 1) parse GGUF special tokens such as <|im_start|> / <|im_end|>
+          # 2) reset is_done before every new turn (upstream sample otherwise
+          #    immediately exits after the first completed generation).
+          python3 - "$LIB_LLAMA" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text(encoding="utf-8")
+
+          # Allow a full 2K prompt batch on the iPhone app.
+          s, n_batch = re.subn(r'llama_batch_init\(512,\s*0,\s*1\)',
+                               'llama_batch_init(2048, 0, 1)', s, count=1)
+
+          # Use the full 2048-token context configured by the upstream iOS sample.
+          s, n_len = re.subn(r'var n_len: Int32 = 1024',
+                             'var n_len: Int32 = 2048', s, count=1)
+
+          # llama_tokenize(..., add_bos, false) -> parse special tokens = true.
+          s, n_tok = re.subn(
+              r'llama_tokenize\(vocab, text, Int32\(utf8Count\), tokens, Int32\(n_tokens\), add_bos, false\)',
+              'llama_tokenize(vocab, text, Int32(utf8Count), tokens, Int32(n_tokens), add_bos, true)',
+              s,
+              count=1,
+          )
+
+          # Reset generation state for every chat turn.
+          marker = 'func completion_init(text: String) {'
+          if marker not in s:
+              raise SystemExit('completion_init marker not found')
+          s = s.replace(marker,
+                        marker + '\n        is_done = false\n        n_decode = 0',
+                        1)
+
+          if n_tok != 1:
+              raise SystemExit(f'Expected one tokenizer patch, got {n_tok}')
+          if n_len != 1:
+              raise SystemExit(f'Expected one n_len patch, got {n_len}')
+          if n_batch != 1:
+              print(f'Warning: batch-size patch count was {n_batch}; continuing')
+
+          p.write_text(s, encoding="utf-8")
+          print('LibLlama chat patches applied.')
+          PY
 
       - name: Build llama XCFramework
         working-directory: llama.cpp
@@ -40,7 +106,7 @@ jobs:
         run: |
           xcodebuild -downloadPlatform iOS
 
-      - name: Build official llama.swiftui app for a real iPhone
+      - name: Build LocalVoiceAI for a real iPhone
         working-directory: llama.cpp
         run: |
           xcodebuild \
@@ -57,7 +123,6 @@ jobs:
             build
 
       - name: Locate built app
-        id: locate
         shell: bash
         run: |
           set -e
@@ -70,12 +135,14 @@ jobs:
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
           echo "Found app: $APP_PATH"
 
-      - name: Enable Files app / File Sharing
+      - name: Configure app metadata and File Sharing
         shell: bash
         run: |
+          set -e
           PLIST="$APP_PATH/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName LocalQwen" "$PLIST" 2>/dev/null || \
-            /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string LocalQwen" "$PLIST"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName LocalVoiceAI" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string LocalVoiceAI" "$PLIST"
 
           /usr/libexec/PlistBuddy -c "Set :UIFileSharingEnabled true" "$PLIST" 2>/dev/null || \
             /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
@@ -83,24 +150,23 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" "$PLIST" 2>/dev/null || \
             /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST"
 
-          echo "Final Info.plist values:"
-          /usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$PLIST" || true
-          /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$PLIST" || true
-          /usr/libexec/PlistBuddy -c "Print :LSSupportsOpeningDocumentsInPlace" "$PLIST" || true
+          echo "Display name: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")"
+          echo "Bundle ID:    $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")"
 
       - name: Package unsigned IPA
         shell: bash
         run: |
+          set -e
           rm -rf "$GITHUB_WORKSPACE/Payload"
           mkdir -p "$GITHUB_WORKSPACE/Payload"
           cp -R "$APP_PATH" "$GITHUB_WORKSPACE/Payload/"
           cd "$GITHUB_WORKSPACE"
-          /usr/bin/zip -qry LocalQwen-unsigned.ipa Payload
-          ls -lh LocalQwen-unsigned.ipa
+          /usr/bin/zip -qry LocalVoiceAI-v1-unsigned.ipa Payload
+          ls -lh LocalVoiceAI-v1-unsigned.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v6
         with:
-          name: LocalQwen-iOS-unsigned-IPA
-          path: LocalQwen-unsigned.ipa
+          name: LocalVoiceAI-v1-unsigned-IPA
+          path: LocalVoiceAI-v1-unsigned.ipa
           retention-days: 7

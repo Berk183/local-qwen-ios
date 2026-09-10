@@ -1,7 +1,8 @@
-# Do not upload model files
+# Model files must never be pushed to GitHub
 *.gguf
 *.bin
 *.ipa
 DerivedData/
-llama.cpp/
 Payload/
+llama.cpp/
+.DS_Store

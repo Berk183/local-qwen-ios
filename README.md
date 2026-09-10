@@ -1,48 +1,97 @@
-# LocalQwen iOS - GitHub Actions Starter
+# LocalVoiceAI iOS v1
 
-Bu repo Windows kullanarak GitHub Actions üzerindeki macOS runner'da
-llama.cpp'nin resmi SwiftUI iPhone örneğini derler ve imzasız bir IPA üretir.
+Bu sürüm, iPhone üzerinde tamamen yerel `llama.cpp` inference yapan **kendi sohbet arayüzümüzün ilk sürümüdür**.
 
-## Neden ilk önce bunu yapıyoruz?
+## Bu sürümde ne var?
 
-Bu ilk aşamanın amacı:
-1. GitHub Actions ile iPhone/arm64 derlemesinin çalıştığını doğrulamak.
-2. Windows + Sideloadly ile IPA'yı iPhone'a kurabildiğini doğrulamak.
-3. Qwen3-1.7B GGUF modelinin iPhone 13'te gerçekten yüklenebildiğini test etmek.
+- Qwen2.5-Instruct için doğru ChatML prompt formatı
+- Çok turlu sohbet (2K context'i korumak için son 8 mesaj)
+- GGUF dosyalarını uygulamanın Documents alanından görme
+- Dosyalar uygulamasından `.gguf` import etme
+- Model yükleme / boşaltma
+- Streaming cevap
+- Gerçek üretime daha yakın token/sn göstergesi
+- iOS `AVSpeechSynthesizer` ile Türkçe sesli cevap
+- Tamamen cihaz üzerinde çalışma; model inference için HTTP/server yok
 
-Bu demo final sesli asistan değildir. Final uygulamada doğru Qwen chat template,
-Whisper mikrofon entegrasyonu ve iOS TTS eklenecektir.
+> v1'de **Whisper/mikrofon henüz yok**. Önce Qwen chat katmanını iPhone 13 üzerinde sağlamlaştırıyoruz. v2'de whisper.cpp + mikrofon eklenerek sesli giriş tamamlanacak.
 
-## Modeli GitHub'a yükleme
+## Neden resmi llama.swiftui demosunu patch ediyoruz?
 
-Qwen GGUF dosyasını bu repoya yükleme.
-Model iPhone'a sonradan Files / File Sharing üzerinden kopyalanacak.
+Mac olmadan Windows + GitHub Actions kullanıyoruz. Workflow sabitlenmiş `llama.cpp b10883` sürümünü indirir, resmi iOS projesinin derleme altyapısını kullanır ama `ContentView`'ı bizim uygulamamızla değiştirir.
 
-## Build
+Ayrıca resmi demo üzerinde iki küçük inference düzeltmesi yapar:
 
-GitHub Actions sekmesinden `Build Local Qwen iOS IPA` workflow'unu çalıştır.
+1. Qwen'in `<|im_start|>` / `<|im_end|>` özel tokenlarının tokenizer tarafından special token olarak işlenmesi.
+2. İlk cevaptan sonra `is_done` değişkeninin sıfırlanması. Demo bunu sıfırlamadığı için ikinci mesajda hiç token üretmeden bitebilir.
 
-Build bitince Artifacts bölümünden:
-`LocalQwen-iOS-unsigned-IPA`
-indir.
+## Önerilen model
 
-## Kurulum
+İlk hedef:
 
-Windows'ta Sideloadly ile IPA'yı kendi Apple ID'nle imzalayıp iPhone'a yükle.
+`Qwen2.5-1.5B-Instruct-Q3_K_M.gguf`
 
-Ücretsiz Apple developer provisioning ile uygulama 7 gün sonra yeniden
-imzalanmalıdır.
+Bu model mevcut testte iPhone 13 üzerinde yüklenebildiği için v1'in ana hedefidir.
 
-## Model
+## Mevcut GitHub repo'na kurulum
 
-Önerilen ilk test:
-Qwen3-1.7B-Q4_K_M.gguf
+Bu ZIP'in içeriğini mevcut `local-qwen-ios` repo klasörünün köküne kopyala. `.github` klasörünün de kopyalandığından emin ol.
 
-Modeli iPhone Files uygulamasındaki LocalQwen Documents klasörüne kopyala.
-Uygulama yeniden açıldığında Documents klasöründeki GGUF dosyalarını tarar.
+Ardından Windows terminalinde:
 
-## Not
+```bash
+git add .
+git commit -m "LocalVoiceAI v1"
+git push
+```
 
-llama.cpp'nin resmi SwiftUI örneği bir test/demo uygulamasıdır ve güncel chat
-modelleri için final sohbet arayüzü değildir. İlk testte ana hedef modelin
-yüklenmesi ve inference yapmasıdır.
+Push sonrası GitHub -> **Actions** -> `Build LocalVoiceAI iOS v1` workflow'u otomatik başlar. İstersen `Run workflow` ile elle de başlatabilirsin.
+
+## IPA
+
+Başarılı build sonunda Actions sayfasındaki **Artifacts** bölümünden:
+
+`LocalVoiceAI-v1-unsigned-IPA`
+
+indir. ZIP'in içindeki `LocalVoiceAI-v1-unsigned.ipa` dosyasını Sideloadly + Remote Anisette ile kur.
+
+## Modeli telefona koyma
+
+File Sharing açık. Windows Apple Devices / iTunes File Sharing üzerinden GGUF'u uygulamanın Documents alanına kopyalayabilirsin. Uygulama içinde **Model -> Model listesini yenile** deyip modeli seç.
+
+Alternatif olarak uygulamada **Model -> Dosyalardan GGUF ekle…** ile Files picker açılır.
+
+## İlk test
+
+Modeli yükledikten sonra sırayla şunları dene:
+
+```text
+Merhaba
+```
+
+```text
+Benimle yalnızca sohbet et. Şu an nasılsın?
+```
+
+```text
+Az önce sana ne sormuştum?
+```
+
+Beklenen: Model sadece assistant cevabı üretmeli; kendi kendine sahte user/assistant konuşması yazmamalı ve ikinci mesajda boş cevap vermemeli.
+
+## Not: Eski LocalQwen ve model dosyaları
+
+Workflow hâlâ resmi `llama.swiftui` projesinin bundle kimliğini kullanır. Aynı Apple hesabıyla Sideloadly üzerinden eski uygulamanın üstüne kurulursa iOS genellikle Documents verisini korur. Yine de GGUF'un PC'deki ana kopyasını sakla; uygulamayı **Delete App** ile silersen sandbox içindeki model de silinir.
+
+## Sonraki sürüm (v2)
+
+v1 chat testi geçtiğinde eklenecekler:
+
+- whisper.cpp XCFramework
+- Whisper tiny/base quantized model seçimi
+- AVAudioEngine mikrofon kaydı
+- 16 kHz mono PCM
+- Türkçe ASR
+- Whisper -> Qwen otomatik gönderme
+- Qwen -> iOS TTS
+- RAM koruması için Whisper/Qwen yükleme-boşaltma stratejisi
